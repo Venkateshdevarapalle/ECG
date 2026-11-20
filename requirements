@@ -1,0 +1,12 @@
+numpy
+scipy
+opencv-python
+matplotlib
+pandas
+wfdb
+scikit-image
+streamlit
+tqdm
+fastdtw
+scikit-learn
+biosppy
