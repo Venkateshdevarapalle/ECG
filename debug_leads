@@ -1,0 +1,84 @@
+# debug_leads.py  (place in project root)
+import cv2, os, sys
+from importlib import reload
+
+# ensure src is importable
+sys.path.insert(0, os.path.abspath(""))
+# import target function
+try:
+    from src.lead_segmentation import find_lead_regions
+    import src.lead_segmentation as ls_mod
+    reload(ls_mod)
+except Exception as e:
+    print("ERROR: could not import src.lead_segmentation.find_lead_regions:", e)
+    raise
+
+IMG = "data/images/PMI(24).jpg"
+OUT = "results/lead_detection_debug.png"
+os.makedirs("results", exist_ok=True)
+
+img = cv2.imread(IMG)
+if img is None:
+    print("Cannot open image:", IMG, "— check the path and filename.")
+    raise SystemExit(1)
+
+gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+print("Calling find_lead_regions(..., debug=True) from:", ls_mod.__file__)
+ret = None
+try:
+    ret = find_lead_regions(gray, debug=True)
+except TypeError as e:
+    # function signature may not accept debug flag, try without
+    print("Warning: find_lead_regions(...) rejected debug=True — trying without debug flag.")
+    try:
+        ret = find_lead_regions(gray)
+    except Exception as e2:
+        print("Error calling find_lead_regions without debug:", e2)
+        raise
+
+# support multiple return types
+boxes = None
+debug_imgs = None
+if isinstance(ret, tuple) and len(ret) == 2:
+    boxes, debug_imgs = ret
+    print("find_lead_regions returned (boxes, debug_imgs).")
+elif isinstance(ret, list) or isinstance(ret, tuple):
+    boxes = list(ret)
+    print("find_lead_regions returned boxes only (length):", len(boxes))
+else:
+    print("Unexpected return from find_lead_regions():", type(ret))
+    raise SystemExit(1)
+
+# Print detected boxes summary
+print("Detected boxes count:", len(boxes))
+for i, b in enumerate(boxes[:20]):
+    print(f"  Box {i+1}: {b}")
+
+# draw boxes
+vis = img.copy()
+if boxes:
+    for i,(x,y,w,h) in enumerate(boxes):
+        cv2.rectangle(vis, (int(x),int(y)), (int(x+int(w)), int(y+int(h))), (0,255,0), 3)
+        cv2.putText(vis, f"Lead{i+1}", (int(x)+6, int(y)+22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+
+cv2.imwrite(OUT, vis)
+print("Saved debug image to:", OUT)
+
+# if debug images exist, also save them for inspection
+if debug_imgs:
+    for k,v in debug_imgs.items():
+        fn = f"results/debug_{k}.png"
+        # if grayscale / binary arrays: scale/convert appropriately
+        arr = v
+        if arr is None:
+            continue
+        if len(arr.shape) == 2:
+            # single-channel
+            cv2.imwrite(fn, arr)
+        else:
+            # multi-channel or color
+            cv2.imwrite(fn, cv2.cvtColor(arr, cv2.COLOR_BGR2RGB))
+        print("Saved debug image:", fn)
+
+print("Done.")
