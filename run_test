@@ -1,0 +1,32 @@
+# run_test.py
+import os
+from src.preprocessing import preprocess_image
+from src.trace_extraction import extract_trace_by_edges, extract_trace_by_contour
+from src.signal_reconstruction import detect_grid_spacing, pixels_to_signal
+from src.utils import save_csv
+
+# Update this path to one sample image you have in data/images/
+IMG_PATH = "data/images/example1.png"  
+
+def main():
+    if not os.path.exists(IMG_PATH):
+        print(f"Please place a sample image at {IMG_PATH} or update the path.")
+        return
+ res = preprocess_image(IMG_PATH)
+    cleaned = res["cleaned"]
+    enhanced = res["enhanced"]
+    xs, ys, skel = extract_trace_by_edges(cleaned)
+    if len(xs) == 0:
+        xs, ys = extract_trace_by_contour(cleaned)
+    px_grid = detect_grid_spacing(enhanced)
+    if px_grid is None:
+        print("Grid detection failed; using default value px_per_small_grid=6")
+        px_grid = 6
+    t, v, fs = pixels_to_signal(xs, ys, int(px_grid))
+    os.makedirs("results", exist_ok=True)
+    out = "results/test_extracted.csv"
+    save_csv(t, v, out)
+    print(f"Saved {out} (samples: {len(t)}, fs={fs})")
+
+if __name__ == "__main__":
+    main()
