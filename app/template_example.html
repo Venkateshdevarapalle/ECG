@@ -1,0 +1,33 @@
+<!-- app/template_example.html -->
+<style>
+.header {
+  background: linear-gradient(90deg,#0b1226,#16203b);
+  color: white;
+  padding: 18px;
+  border-radius: 8px;
+  font-family: Arial, Helvetica, sans-serif;
+}
+.card {
+  background: #0f1b2b;
+  color: #e6eef8;
+  padding: 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.small {
+  color: #b8c7d9;
+  font-size: 14px;
+}
+</style>
+<div class="header">
+  <h1>ECG Image Digitizer</h1>
+  <div class="small">Upload paper ECG → get calibrated CSV + waveform</div>
+</div>
+<div class="card">
+  <strong>Instructions:</strong>
+  <ul>
+    <li>Upload a clear scanned ECG or photo (PNG/JPG).</li>
+    <li>Use the sidebar to adjust sampling rate or smoothing.</li>
+    <li>Click download to get the CSV (time, voltage).</li>
+  </ul>
+</div>
