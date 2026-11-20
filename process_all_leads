@@ -1,0 +1,174 @@
+# process_all_leads.py
+import os
+import csv
+import math
+import zipfile
+import numpy as np
+import cv2
+from scipy.signal import medfilt, find_peaks
+from importlib import reload
+
+# ensure src importable
+import sys
+sys.path.insert(0, os.path.abspath(""))
+
+from src.lead_segmentation import find_lead_regions
+import src.lead_segmentation as ls_mod
+reload(ls_mod)
+
+# these functions are expected in your src (from earlier run_test)
+from src.preprocessing import preprocess_image
+from src.trace_extraction import extract_trace_by_edges, extract_trace_by_contour
+from src.signal_reconstruction import detect_grid_spacing, pixels_to_signal
+from src.utils import save_csv  # expects (time, voltage, path) or adapt below
+
+# --- CONFIG ---
+IMG = "data/images/PMI(24).jpg"      # change if required
+OUT_DIR = "results"
+FS_OUTPUT = 360                      # desired output sampling rate (Hz)
+PAPER_SPEED = 25.0                   # mm/s (used for scaling if needed)
+SMOOTH_MEDIAN_KERNEL = 5             # smoothing window in samples (odd)
+MIN_PEAK_DISTANCE_S = 0.25           # minimum separation between beats in seconds
+MIN_PEAK_PROMINENCE = 0.3            # peak prominence in mV (tune if needed)
+
+os.makedirs(OUT_DIR, exist_ok=True)
+
+def crop_box(img, box):
+    x,y,w,h = box
+    return img[y:y+h, x:x+w].copy()
+
+def postprocess_signal(v, fs):
+    # baseline remove using median filter (window ~0.2s)
+    win = int(max(3, round(0.2 * fs)))
+    if win % 2 == 0:
+        win += 1
+    try:
+        baseline = medfilt(v, kernel_size=win)
+        v2 = v - baseline
+    except Exception:
+        v2 = v - np.median(v)
+
+    # smoothing median
+    k = SMOOTH_MEDIAN_KERNEL
+    if k % 2 == 0:
+        k += 1
+    try:
+        v2 = medfilt(v2, kernel_size=k)
+    except Exception:
+        pass
+
+    return v2
+
+def estimate_hr_from_signal(v, fs):
+    # find peaks (R-peaks). Use absolute threshold/prominence heuristics.
+    distance = int(max(1, round(MIN_PEAK_DISTANCE_S * fs)))
+    # use prominence relative to RMS
+    prom = max(MIN_PEAK_PROMINENCE, 0.2 * np.std(v))
+    # ensure v is numpy array
+    v_arr = np.asarray(v)
+    # invert if peaks are negative
+    if np.abs(np.min(v_arr)) > np.abs(np.max(v_arr)):
+        search_sig = -v_arr
+    else:
+        search_sig = v_arr
+
+    peaks, props = find_peaks(search_sig, distance=distance, prominence=prom)
+    if len(peaks) < 2:
+        return None, peaks
+    # compute BPM from median RR
+    rr = np.diff(peaks) / fs
+    median_rr = np.median(rr)
+    if median_rr <= 0:
+        return None, peaks
+    hr = 60.0 / median_rr
+    return float(round(hr, 1)), peaks
+
+def save_csv_local(t, v, path):
+    # t, v are numpy arrays or lists
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["time", "voltage"])
+        for ti, vi in zip(t, v):
+            w.writerow([float(ti), float(vi)])
+
+def process_image_all_leads(img_path):
+    img_bgr = cv2.imread(img_path)
+    if img_bgr is None:
+        raise FileNotFoundError(img_path)
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+
+    # find lead boxes (debug True returns boxes and debug imgs)
+    ret = find_lead_regions(gray, debug=True)
+    if isinstance(ret, tuple) and len(ret) == 2:
+        boxes, dbg = ret
+    else:
+        boxes = list(ret)
+        dbg = {}
+
+    print("Detected boxes:", len(boxes))
+
+    all_meta = []
+    csv_paths = []
+    for i, box in enumerate(boxes, start=1):
+        print(f"Processing lead {i} / {len(boxes)} ...")
+        lead_img = crop_box(gray, box)
+
+        # preprocess lead image (grid removal / contrast)
+        res = preprocess_image(None, image=lead_img) if 'preprocess_image' in preprocess_image.__code__.co_varnames else preprocess_image(lead_img)
+        # preprocess_image returns dict in your code: cleaned, enhanced etc.
+
+        cleaned = res.get("cleaned", lead_img) if isinstance(res, dict) else res
+# attempt trace extraction
+        xs, ys, skel = extract_trace_by_edges(cleaned)
+        if len(xs) == 0:
+            xs, ys = extract_trace_by_contour(cleaned)
+
+        # detect grid spacing from enhanced image if available
+        enhanced = res.get("enhanced", cleaned) if isinstance(res, dict) else cleaned
+        px_grid = detect_grid_spacing(enhanced)
+        if px_grid is None:
+            px_grid = 6  # fallback px per small grid - tune if needed
+
+        # reconstruct signal from pixels
+        t, v, fs = pixels_to_signal(xs, ys, int(px_grid), fs_out=FS_OUTPUT) if 'fs_out' in pixels_to_signal.__code__.co_varnames else pixels_to_signal(xs, ys, int(px_grid))
+        # Ensure time starts at 0
+        t = np.asarray(t)
+        v = np.asarray(v)
+        if t.size == 0 or v.size == 0:
+            print(f"  Lead {i}: empty trace, skipping")
+            meta = {"lead_index": i, "duration_s": 0, "sampling_rate": fs, "hr_bpm": None, "csv_file": None}
+            all_meta.append(meta)
+            continue
+
+        # Post-process baseline/smoothing
+        v_proc = postprocess_signal(v, fs)
+
+        # Estimate HR
+        hr, peaks = estimate_hr_from_signal(v_proc, fs)
+
+        # Save CSV
+        fname = f"lead_{i}_{os.path.basename(img_path).split('.')[0]}_{i}.csv"
+        out_path = os.path.join(OUT_DIR, fname)
+        save_csv_local(t, v_proc, out_path)
+        csv_paths.append(out_path)
+
+        duration = float(round(float(t[-1] - t[0]) if len(t) > 1 else float(0), 4))
+        meta = {"lead_index": i, "duration_s": duration, "sampling_rate": fs, "hr_bpm": hr, "csv_file": out_path}
+        all_meta.append(meta)
+        print(f"  Saved {out_path} (dur {duration}s, fs {fs}, hr {hr})")
+
+    # create zip
+    zip_path = os.path.join(OUT_DIR, "leads_all.zip")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in csv_paths:
+            zf.write(p, arcname=os.path.basename(p))
+
+    print("All leads processed. ZIP:", zip_path)
+    return all_meta, zip_path
+
+if __name__ == "__main__":
+    meta, zipfile_path = process_image_all_leads(IMG)
+    print("Metadata summary:")
+    for m in meta:
+        print(m)
+    print("Created:", zipfile_path)
